@@ -7,6 +7,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 
@@ -17,7 +18,7 @@ internal static class SovereignBladeTargetingDebugState
     internal static CardModel? ActiveCard;
     internal static bool TargetingActive;
 
-    internal static bool IsSovereignBladeActive => ActiveCard is SovereignBlade;
+    internal static bool IsSovereignBladeActive => (ActiveCard is SovereignBlade) &&!ActiveCardHelper.GetCurrentPlayer().Creature.HasPower<SeekingEdgePower>();
 
     internal static string DescribeCard(CardModel card)
     {

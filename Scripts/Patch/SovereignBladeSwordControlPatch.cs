@@ -1,4 +1,4 @@
-﻿using System;
+﻿﻿using System;
 using System.Linq;
 using System.Reflection;
 using Godot;
@@ -8,6 +8,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 
@@ -42,6 +43,7 @@ internal static class SovereignBladeSwordControlState
     internal static float HoveredHoldSeconds = 0.08f;
     internal static float HoveredTimeout;
     internal static NCreature? HoveredCreature;
+    internal static bool UseMouseAiming = false;   // 默认使用新逻辑
 
     internal static void Reset()
     {
@@ -172,6 +174,25 @@ internal class SovereignBladeSwordControl_StartTargeting_Position
     }
 }
 
+// [HarmonyPatch(typeof(NSovereignBladeVfx), "EndSlash")]
+// class SovereignBladeSlashFixPatch
+// {
+//     static void Postfix(NSovereignBladeVfx __instance)
+//     {
+//         var spineField = AccessTools.Field(typeof(NSovereignBladeVfx), "_spineNode");
+//         var trailStartField = AccessTools.Field(typeof(NSovereignBladeVfx), "_trailStart");
+//         var slashField = AccessTools.Field(typeof(NSovereignBladeVfx), "_slashParticles");
+//
+//         var spine = (Node2D)spineField.GetValue(__instance);
+//         var trailStart = (Vector2)trailStartField.GetValue(__instance);
+//         var slash = (GpuParticles2D)slashField.GetValue(__instance);
+//
+//         Vector2 dir = spine.GlobalPosition - trailStart;
+//
+//         slash.Rotation = dir.Angle() - Mathf.Pi / 2;
+//     }
+// }
+
 [HarmonyPatch(typeof(NTargetManager), "StartTargeting", new Type[] { typeof(TargetType), typeof(Control), typeof(TargetMode), typeof(Func<bool>), typeof(Func<Node, bool>) })]
 internal class SovereignBladeSwordControl_StartTargeting_Control
 {
@@ -270,9 +291,31 @@ internal class SovereignBladeSwordControl_Process
         //     }
         // }
 
-        if (SovereignBladeTargetingDebugState.TargetingActive && SovereignBladeSwordControlState.HoveredCreature != null)
+        if (SovereignBladeTargetingDebugState.TargetingActive)
         {
-            SovereignBladeSwordControl.UpdateAimRotation(SovereignBladeSwordControlState.HoveredCreature, spine.GlobalPosition);
+            if (SovereignBladeSwordControlState.UseMouseAiming)
+            {
+                // 新逻辑：指向鼠标
+                Vector2 mousePos = spine.GetGlobalMousePosition();
+                Vector2 dir = mousePos - spine.GlobalPosition;
+                if (dir.LengthSquared() > 0.0001f)
+                {
+                    SovereignBladeSwordControlState.DesiredRotation = dir.Angle() + SovereignBladeSwordControlState.RotationOffsetRad;
+                }
+            }
+            else
+            {
+                // 旧逻辑：指向悬停的生物
+                if (SovereignBladeSwordControlState.HoveredCreature != null)
+                {
+                    SovereignBladeSwordControl.UpdateAimRotation(SovereignBladeSwordControlState.HoveredCreature, spine.GlobalPosition);
+                }
+                else
+                {
+                    SovereignBladeSwordControlState.DesiredRotation = SovereignBladeSwordControlState.DownAngleRad + SovereignBladeSwordControlState.RotationOffsetRad;
+                }
+                // 没有悬停生物时，DesiredRotation 保持原值（或可设置为默认方向）
+            }
         }
 
         float currentRot = spine.GlobalRotation;
@@ -296,6 +339,7 @@ internal class SovereignBladeSwordControl_Process
         return false;
     }
 }
+
 
 [HarmonyPatch]
 internal class SovereignBladeSwordControl_MouseCardPlay_Start
@@ -370,6 +414,63 @@ internal class SovereignBladeSwordControl_OnMouseReleased
             SovereignBladeSwordControlState.ReleasePending = true;
             SovereignBladeSwordControlState.ReleaseCooldown = SovereignBladeSwordControlState.HoldReleaseDelaySeconds;
             ModConsole.Print("[SB] Sword control: hold canceled (delay)");
+        }
+    }
+    [HarmonyPatch(typeof(NSovereignBladeVfx), nameof(NSovereignBladeVfx.Attack))]
+    internal static class SovereignBladeImpactRotationPatch
+    {
+        private const float ImpactRotationOffsetDegrees = 0f;
+        private const float MatchDistanceSquared = 16f;
+
+        private static void Prefix(NSovereignBladeVfx __instance, Vector2 targetPos)
+        {
+            var combatRoom = NCombatRoom.Instance;
+            if (combatRoom?.CombatVfxContainer == null)
+            {
+                return;
+            }
+
+            Node2D swordTip;
+            try
+            {
+                swordTip = __instance.GetNode<Node2D>("SpineSword/SwordBone/ScaleContainer/SpikeCircle");
+            }
+            catch
+            {
+                return;
+            }
+
+            Vector2 swordPos = swordTip.GlobalPosition;
+            Vector2 direction = targetPos - swordPos;
+            if (direction.LengthSquared() < 0.001f)
+            {
+                return;
+            }
+
+            float rotationDegrees = Mathf.RadToDeg(direction.Angle()) + ImpactRotationOffsetDegrees;
+
+            var impact = combatRoom.CombatVfxContainer
+                .GetChildren()
+                .OfType<NBigSlashImpactVfx>()
+                .Where(vfx => vfx.GlobalPosition.DistanceSquaredTo(targetPos) <= MatchDistanceSquared)
+                .LastOrDefault();
+
+            if (impact == null)
+            {
+                return;
+            }
+
+            Node2D corePivot;
+            try
+            {
+                corePivot = impact.GetNode<Node2D>("impact_core_pivot");
+            }
+            catch
+            {
+                return;
+            }
+
+            corePivot.RotationDegrees = rotationDegrees;
         }
     }
 }
