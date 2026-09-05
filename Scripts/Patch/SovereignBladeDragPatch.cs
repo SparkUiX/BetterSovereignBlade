@@ -1,4 +1,5 @@
 ﻿using System.Reflection;
+using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
@@ -39,6 +40,8 @@ public NCreature? VisualLockedTarget;
 public double VisualLockUntil;
 
 public double PlayQueuedUntil;
+
+public SovereignBladeTrailController? TrailController;
 }
 
 private static readonly ConditionalWeakTable<NSovereignBladeVfx, BladeState> States = new();
@@ -56,8 +59,6 @@ private static readonly System.Reflection.PropertyInfo HoveredNodeProperty =
 AccessTools.Property(typeof(NTargetManager), "HoveredNode");
 
 static bool specialMode = true;
-
-static bool rotateTowardsMouseWhileDragging = false;
 
 const float keepDragRotationAngle = 0f;
 
@@ -82,6 +83,8 @@ private static BladeState GetState(NSovereignBladeVfx vfx) => States.GetOrCreate
 
 private static double NowSeconds => Time.GetTicksMsec() / 1000.0;
 
+private static bool RotateTowardsMouseWhileDragging => PaletteSettingsMod.IsDragRotateEnabled();
+
 static bool Prefix(NSovereignBladeVfx __instance, double delta)
 {
 if (!specialMode)
@@ -96,6 +99,7 @@ return true;
 
 BladeState state = GetState(__instance);
 float dt = (float)delta;
+state.TrailController ??= new SovereignBladeTrailController();
 
 Node2D? spine = SpineField.GetValue(__instance) as Node2D;
 if (spine == null)
@@ -114,7 +118,7 @@ bool canAttack = CanAttack(__instance.Card as SovereignBlade, state);
 if (!state.Dragging &&
 leftPressed &&
 distToMouse < startDragRadius &&
-!(NPlayerHand.Instance?.InCardPlay ?? false))
+CanUseDirectSwordDrag(__instance.Card as SovereignBlade))
 {
 state.Dragging = true;
 state.Inertia = false;
@@ -124,6 +128,9 @@ state.Velocity = Vector2.Zero;
 
 UpdateSwordTargeting(spine, state, canAttack, leftPressed);
 UpdateVisualLockFromHover(state);
+
+bool showTrail = state.Dragging && leftPressed && RotateTowardsMouseWhileDragging;
+state.TrailController.Update(__instance, spine, showTrail, state.Velocity, dt);
 
 if (isAttacking)
 {
@@ -144,6 +151,7 @@ return false;
 if (state.Dragging && !leftPressed)
 {
     state.Dragging = false;
+    state.TrailController.StopEmission();
 
     if (!canAttack || !state.OwnsTargeting)
     {
@@ -198,6 +206,54 @@ return false;
 return true;
 }
 
+private static bool CanUseDirectSwordDrag(SovereignBlade? card)
+{
+if (card == null)
+{
+return false;
+}
+
+if (!LocalContext.IsMine(card))
+{
+return false;
+}
+
+NPlayerHand? hand = NPlayerHand.Instance;
+if (hand == null)
+{
+return false;
+}
+
+if (hand.InCardPlay)
+{
+return false;
+}
+
+if (NTargetManager.Instance?.IsInSelection ?? false)
+{
+return false;
+}
+
+return true;
+}
+
+private static void CancelStandaloneTargetingIfNeeded(BladeState state)
+{
+if (!state.OwnsTargeting)
+{
+return;
+}
+
+NTargetManager? manager = NTargetManager.Instance;
+if (manager?.IsInSelection ?? false)
+{
+manager.CancelTargeting();
+}
+
+state.OwnsTargeting = false;
+state.AwaitingSelection = false;
+}
+
 private static void UpdateSwordTargeting(
 Node2D spine,
 BladeState state,
@@ -207,10 +263,23 @@ bool leftPressed)
 NTargetManager? manager = NTargetManager.Instance;
 if (manager == null)
 {
+state.OwnsTargeting = false;
+state.AwaitingSelection = false;
 return;
 }
 
-bool shouldOwnTargeting = canAttack && state.Dragging && leftPressed;
+NPlayerHand? hand = NPlayerHand.Instance;
+bool canUseHandCard =
+hand != null &&
+hand.CurrentMode == NPlayerHand.Mode.Play &&
+!hand.InCardPlay &&
+FindPlayableSovereignBladeInHand() != null;
+
+bool shouldOwnTargeting =
+canAttack &&
+state.Dragging &&
+leftPressed &&
+canUseHandCard;
 
 if (shouldOwnTargeting)
 {
@@ -233,12 +302,7 @@ TaskHelper.RunSafely(WaitForSelectionResult(state));
 }
 else if (state.OwnsTargeting && !state.AwaitingSelection)
 {
-if (manager.IsInSelection)
-{
-manager.CancelTargeting();
-}
-
-state.OwnsTargeting = false;
+CancelStandaloneTargetingIfNeeded(state);
 }
 }
 
@@ -423,7 +487,7 @@ Vector2 target = new Vector2(creature.GetTopOfHitbox().X, lockedY);
 
 Vector2 oldPos = spine.GlobalPosition;
 spine.GlobalPosition = spine.GlobalPosition.Lerp(target, dragSpeed * dt);
-state.Velocity = (spine.GlobalPosition - oldPos) / Math.Max(dt, 0.0001f);
+state.Velocity = (spine.GlobalPosition - oldPos) / Mathf.Max(dt, 0.0001f);
 
 RotateTowardsAngle(spine, Mathf.Pi/2, maxRotationSpeed, dt);
 return true;
@@ -444,7 +508,7 @@ Vector2 target = mouse - dir * (100f + state.Velocity.Length() * 0.05f);
 
 Vector2 oldPos = spine.GlobalPosition;
 spine.GlobalPosition = spine.GlobalPosition.Lerp(target, dragSpeed * dt);
-state.Velocity = (spine.GlobalPosition - oldPos) / Math.Max(dt, 0.0001f);
+state.Velocity = (spine.GlobalPosition - oldPos) / Mathf.Max(dt, 0.0001f);
 }
 else if (dist <= followRadius)
 {
@@ -452,7 +516,7 @@ state.Velocity *= 1f - slowDown;
 spine.GlobalPosition += state.Velocity * dt;
 }
 
-if (rotateTowardsMouseWhileDragging)
+if (RotateTowardsMouseWhileDragging)
 {
 RotateTowards(spine, mouse, maxRotationSpeed, dt);
 }
@@ -526,7 +590,23 @@ Mathf.Pi);
 
 return Mathf.Abs(remain) <= epsilon;
 }
+
+[HarmonyPatch(typeof(NSovereignBladeVfx), nameof(NSovereignBladeVfx._ExitTree))]
+private static class SovereignBladeDragCleanupPatch
+{
+    private static void Prefix(NSovereignBladeVfx __instance)
+    {
+        if (!States.TryGetValue(__instance, out BladeState? state))
+        {
+            return;
+        }
+
+        state.TrailController?.Dispose();
+        state.TrailController = null;
+    }
 }
+}
+
     public static class ActiveCardHelper
     {
         public static Player? GetCurrentPlayer()

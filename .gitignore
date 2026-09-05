@@ -1,0 +1,24 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# .NET build output
+bin/
+obj/
+
+# IDE and user-specific files
+.idea/
+.vs/
+.vscode/
+*.DotSettings.user
+*.csproj.user
+*.csproj.lscache
+
+# Build and export artifacts
+exports/
+*.pck
+*.zip
+*.import
+
+# Local planning notes
+Plan.txt

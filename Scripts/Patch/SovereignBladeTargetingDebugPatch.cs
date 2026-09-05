@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using Godot;
 using HarmonyLib;
@@ -18,7 +18,9 @@ internal static class SovereignBladeTargetingDebugState
     internal static CardModel? ActiveCard;
     internal static bool TargetingActive;
 
-    internal static bool IsSovereignBladeActive => (ActiveCard is SovereignBlade) &&!ActiveCardHelper.GetCurrentPlayer().Creature.HasPower<SeekingEdgePower>();
+    internal static bool IsSovereignBladeActive =>
+        ActiveCard is SovereignBlade &&
+        ActiveCardHelper.GetCurrentPlayer()?.Creature.HasPower<SeekingEdgePower>() == false;
 
     internal static string DescribeCard(CardModel card)
     {
@@ -70,7 +72,7 @@ internal class SovereignBladeTargetingDebug_OnMousePressed
         ModConsole.Print("[SB] Mouse pressed on card holder");
         if (inputEvent is not InputEventMouseButton mouse || mouse.ButtonIndex != MouseButton.Left || !mouse.Pressed)
             return;
-    
+
         CardModel? card = __instance.CardModel;
         ModConsole.Print("[SB] Card selected: " + card?.GetType().Name);
         if (card is SovereignBlade)

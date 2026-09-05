@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
 using Godot;
 
@@ -6,7 +6,7 @@ namespace BetterSovereignBlade.Scripts.Patch;
 
 public class BigSlashColorChangePatch
 {
-   
+
 }
 
 [HarmonyPatch(typeof(NBigSlashImpactVfx), nameof(NBigSlashImpactVfx.Create), new[] { typeof(Vector2) })]

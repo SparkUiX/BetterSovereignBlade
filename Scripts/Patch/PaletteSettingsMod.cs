@@ -7,10 +7,15 @@ using System.Threading.Tasks;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.addons.mega_text;
+using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.Settings;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace BetterSovereignBlade.Scripts.Patch;
 
@@ -37,9 +42,29 @@ public static class PaletteSettingsMod
 
 	private const string PresetDropdownName = "ModScenePalettePresetDropdown";
 
+	private const string DynamicRgbRowName = "ModScenePaletteDynamicRgbRow";
+
+	private const string DynamicRgbToggleName = "ModScenePaletteDynamicRgbToggle";
+
+	private const string DynamicRgbSpeedRowName = "ModScenePaletteDynamicRgbSpeedRow";
+
+	private const string DynamicRgbSpeedDropdownName = "ModScenePaletteDynamicRgbSpeedDropdown";
+
+	private const string DragRotateRowName = "ModScenePaletteDragRotateRow";
+
+	private const string DragRotateToggleName = "ModScenePaletteDragRotateToggle";
+
 	private const string ColorRowPrefix = "ModScenePaletteColorRow";
 
 	private const string ColorButtonPrefix = "ModScenePaletteColorButton";
+
+	private const string ColorRgbTogglePrefix = "ModScenePaletteColorRgbToggle";
+
+	private const float DefaultDynamicRgbSpeedCyclesPerSecond = 0.14f;
+
+	private const float DynamicRgbSaturationBoost = 0.08f;
+
+	private const float DynamicRgbValueBoost = 0.04f;
 
 	private const string PresetCustomText = "自定义";
 
@@ -89,6 +114,17 @@ public static class PaletteSettingsMod
 	private static readonly Color DefaultAuraEffect2Color = new Color(0.501961f, 0.858824f, 1f, 1f);
 
 	private static readonly Dictionary<PaletteColorSlot, ColorPickerButton> _colorButtons = new Dictionary<PaletteColorSlot, ColorPickerButton>();
+
+	private static readonly Dictionary<PaletteColorSlot, NFastModeTickbox> _colorRgbToggles = new Dictionary<PaletteColorSlot, NFastModeTickbox>();
+
+	private static readonly IReadOnlyList<(int Id, string Text, float Speed)> _dynamicSpeedOptions = new List<(int Id, string Text, float Speed)>
+	{
+		(50, "很慢", 0.05f),
+		(100, "慢", 0.10f),
+		(140, "默认", 0.14f),
+		(200, "快", 0.20f),
+		(300, "很快", 0.30f)
+	};
 
 	// Add or modify fixed presets here. Custom preset always uses the 8 custom colors.
 	private static readonly IReadOnlyList<PresetDefinition> _presetDefinitions = new List<PresetDefinition>
@@ -147,7 +183,17 @@ public static class PaletteSettingsMod
 
 	private static PaletteSettings _settings = PaletteSettings.CreateDefaults();
 
+	private static ulong? _activeSlashPlayerNetId;
+
+	private static double _activeSlashExpirySeconds;
+
 	private static OptionButton? _presetDropdown;
+
+	private static NFastModeTickbox? _dynamicRgbToggle;
+
+	private static OptionButton? _dynamicRgbSpeedDropdown;
+
+	private static NFastModeTickbox? _dragRotateToggle;
 
 	private static bool _isRefreshingUi;
 
@@ -180,6 +226,15 @@ public static class PaletteSettingsMod
 		private static void Postfix(NSovereignBladeVfx __instance)
 		{
 			ApplyPaletteToVfx(__instance);
+		}
+	}
+
+	[HarmonyPatch(typeof(NCombatRoom), nameof(NCombatRoom._Ready))]
+	private static class NCombatRoomReadyPatch
+	{
+		private static void Postfix()
+		{
+			ApplyPaletteToExistingVfx();
 		}
 	}
 	[HarmonyPatch(typeof(NScrollbar), nameof(NScrollbar._Ready))]
@@ -224,6 +279,52 @@ public static class PaletteSettingsMod
 		}
 	}
 
+	[HarmonyPatch(typeof(NSovereignBladeVfx), nameof(NSovereignBladeVfx._Process))]
+	private static class NSovereignBladeVfxProcessPatch
+	{
+		private static void Postfix(NSovereignBladeVfx __instance)
+		{
+			if (GetSettingsForVfx(__instance).DynamicRgbEnabled)
+			{
+				ApplyPaletteToVfx(__instance);
+			}
+		}
+	}
+
+	[HarmonyPatch(typeof(NSovereignBladeVfx), nameof(NSovereignBladeVfx.Attack))]
+	private static class NSovereignBladeVfxAttackPatch
+	{
+		private static void Prefix(NSovereignBladeVfx __instance)
+		{
+			ulong? netId = GetPlayerNetIdFromVfx(__instance);
+			if (netId == null)
+			{
+				return;
+			}
+
+			_activeSlashPlayerNetId = netId;
+			_activeSlashExpirySeconds = Time.GetTicksMsec() / 1000.0 + 1.0;
+		}
+	}
+
+	[HarmonyPatch(typeof(NFastModeTickbox), "OnTick")]
+	private static class NFastModeTickboxOnTickPatch
+	{
+		private static bool Prefix(NFastModeTickbox __instance)
+		{
+			return !TryHandleModTickboxState(__instance, isTicked: true);
+		}
+	}
+
+	[HarmonyPatch(typeof(NFastModeTickbox), "OnUntick")]
+	private static class NFastModeTickboxOnUntickPatch
+	{
+		private static bool Prefix(NFastModeTickbox __instance)
+		{
+			return !TryHandleModTickboxState(__instance, isTicked: false);
+		}
+	}
+
 	[HarmonyPatch(typeof(NBigSlashVfx), nameof(NBigSlashVfx.Create), new[] { typeof(Vector2), typeof(bool), typeof(Color) })]
 	private static class NBigSlashVfxCreatePatch
 	{
@@ -234,7 +335,7 @@ public static class PaletteSettingsMod
 				return;
 			}
 
-			tint = _settings.GetActiveColors().AuraEffect1Color;
+			tint = GetRuntimeColorsForSlashContext().AuraEffect1Color;
 		}
 	}
 
@@ -248,7 +349,7 @@ public static class PaletteSettingsMod
 				return;
 			}
 
-			tint = _settings.GetActiveColors().AuraEffect2Color;
+			tint = GetRuntimeColorsForSlashContext().AuraEffect2Color;
 		}
 	}
 
@@ -270,7 +371,11 @@ public static class PaletteSettingsMod
 		Control? previousControl = focusableControls.LastOrDefault();
 
 		_colorButtons.Clear();
+		_colorRgbToggles.Clear();
 		_presetDropdown = null;
+		_dynamicRgbToggle = null;
+		_dynamicRgbSpeedDropdown = null;
+		_dragRotateToggle = null;
 
 		ColorRect divider = CreateDivider(content);
 		content.AddChild(divider);
@@ -278,17 +383,53 @@ public static class PaletteSettingsMod
 		List<Control> newControls = new List<Control>();
 
 		MarginContainer presetRow = CreatePresetRow(content);
-		_presetDropdown = presetRow.GetNode<OptionButton>(PresetDropdownName);
+		_presetDropdown = presetRow.FindChild(PresetDropdownName, recursive: true, owned: false) as OptionButton;
 		content.AddChild(presetRow);
-		newControls.Add(_presetDropdown);
+		if (_presetDropdown != null)
+		{
+			newControls.Add(_presetDropdown);
+		}
+
+		MarginContainer dynamicRgbRow = CreateDynamicRgbRow(content);
+		_dynamicRgbToggle = dynamicRgbRow.FindChild(DynamicRgbToggleName, recursive: true, owned: false) as NFastModeTickbox;
+		content.AddChild(dynamicRgbRow);
+		if (_dynamicRgbToggle != null)
+		{
+			newControls.Add(_dynamicRgbToggle);
+		}
+
+		MarginContainer dynamicRgbSpeedRow = CreateDynamicRgbSpeedRow(content);
+		_dynamicRgbSpeedDropdown = dynamicRgbSpeedRow.FindChild(DynamicRgbSpeedDropdownName, recursive: true, owned: false) as OptionButton;
+		content.AddChild(dynamicRgbSpeedRow);
+		if (_dynamicRgbSpeedDropdown != null)
+		{
+			newControls.Add(_dynamicRgbSpeedDropdown);
+		}
+
+		MarginContainer dragRotateRow = CreateDragRotateRow(content);
+		_dragRotateToggle = dragRotateRow.FindChild(DragRotateToggleName, recursive: true, owned: false) as NFastModeTickbox;
+		content.AddChild(dragRotateRow);
+		if (_dragRotateToggle != null)
+		{
+			newControls.Add(_dragRotateToggle);
+		}
 
 		foreach (PaletteColorSlot slot in Enum.GetValues(typeof(PaletteColorSlot)).Cast<PaletteColorSlot>())
 		{
 			MarginContainer colorRow = CreateColorRow(content, slot);
-			ColorPickerButton button = colorRow.GetNode<ColorPickerButton>(GetColorButtonName(slot));
 			content.AddChild(colorRow);
-			_colorButtons[slot] = button;
-			newControls.Add(button);
+
+			if (colorRow.FindChild(GetColorButtonName(slot), recursive: true, owned: false) is ColorPickerButton button)
+			{
+				_colorButtons[slot] = button;
+				newControls.Add(button);
+			}
+
+			if (colorRow.FindChild(GetColorRgbToggleName(slot), recursive: true, owned: false) is NFastModeTickbox rgbToggle)
+			{
+				_colorRgbToggles[slot] = rgbToggle;
+				newControls.Add(rgbToggle);
+			}
 		}
 
 		WireFocus(previousControl, newControls);
@@ -312,10 +453,36 @@ public static class PaletteSettingsMod
 		return CreateSettingsRow(content, PresetRowName, "整体预设设置", dropdown);
 	}
 
+	private static MarginContainer CreateDynamicRgbRow(VBoxContainer content)
+	{
+		NFastModeTickbox toggle = CreateStyledTickbox(content, DynamicRgbToggleName);
+		return CreateSettingsRow(content, DynamicRgbRowName, "动态RGB变色", toggle);
+	}
+
+	private static MarginContainer CreateDynamicRgbSpeedRow(VBoxContainer content)
+	{
+		OptionButton dropdown = CreateDynamicRgbSpeedDropdown();
+		return CreateSettingsRow(content, DynamicRgbSpeedRowName, "动态RGB速度", dropdown);
+	}
+
+	private static MarginContainer CreateDragRotateRow(VBoxContainer content)
+	{
+		NFastModeTickbox toggle = CreateStyledTickbox(content, DragRotateToggleName);
+		return CreateSettingsRow(content, DragRotateRowName, "拖动时旋转剑身并显示拖尾", toggle);
+	}
+
 	private static MarginContainer CreateColorRow(VBoxContainer content, PaletteColorSlot slot)
 	{
+		NFastModeTickbox rgbToggle = CreateStyledTickbox(content, GetColorRgbToggleName(slot));
 		ColorPickerButton button = CreateColorButton(slot);
-		return CreateSettingsRow(content, GetColorRowName(slot), GetSlotLabel(slot), button);
+
+		HBoxContainer group = new HBoxContainer();
+		group.AddThemeConstantOverride("separation", 10);
+		group.SizeFlagsHorizontal = Control.SizeFlags.ShrinkEnd;
+		group.AddChild(rgbToggle);
+		group.AddChild(button);
+
+		return CreateSettingsRow(content, GetColorRowName(slot), GetSlotLabel(slot), group);
 	}
 
 	private static MarginContainer CreateSettingsRow(VBoxContainer content, string rowName, string labelText, Control inputControl)
@@ -371,6 +538,35 @@ public static class PaletteSettingsMod
 		return dropdown;
 	}
 
+	private static OptionButton CreateDynamicRgbSpeedDropdown()
+	{
+		OptionButton dropdown = new OptionButton
+		{
+			Name = DynamicRgbSpeedDropdownName,
+			CustomMinimumSize = new Vector2(324f, 48f),
+			FocusMode = Control.FocusModeEnum.All,
+			SizeFlagsHorizontal = Control.SizeFlags.ShrinkEnd
+		};
+
+		foreach ((int id, string text, float speed) in _dynamicSpeedOptions)
+		{
+			dropdown.AddItem($"{text} ({speed:0.00}/s)", id);
+		}
+
+		dropdown.Connect("item_selected", Callable.From<long>(index =>
+		{
+			int selectedIndex = (int)index;
+			if (selectedIndex < 0 || selectedIndex >= dropdown.ItemCount)
+			{
+				return;
+			}
+
+			OnDynamicRgbSpeedChanged(dropdown.GetItemId(selectedIndex));
+		}));
+
+		return dropdown;
+	}
+
 	private static ColorPickerButton CreateColorButton(PaletteColorSlot slot)
 	{
 		ColorPickerButton button = new ColorPickerButton
@@ -390,6 +586,16 @@ public static class PaletteSettingsMod
 		return button;
 	}
 
+	private static NFastModeTickbox CreateStyledTickbox(VBoxContainer content, string tickboxName)
+	{
+		NFastModeTickbox template = content.GetNode<NFastModeTickbox>("FastMode/FastModeTickbox");
+		NFastModeTickbox toggle = (NFastModeTickbox)template.Duplicate();
+		toggle.Name = tickboxName;
+		toggle.FocusMode = Control.FocusModeEnum.All;
+		toggle.SizeFlagsHorizontal = Control.SizeFlags.ShrinkEnd;
+		return toggle;
+	}
+
 	private static void ConfigurePicker(ColorPicker picker)
 	{
 		picker.Set("picker_shape", 1);
@@ -407,21 +613,22 @@ public static class PaletteSettingsMod
 
 	private static void WireFocus(Control? previousControl, IReadOnlyList<Control> newControls)
 	{
-		if (newControls.Count == 0)
+		List<Control> controls = newControls.Where(static control => control != null && GodotObject.IsInstanceValid(control)).ToList();
+		if (controls.Count == 0)
 		{
 			return;
 		}
 
 		if (previousControl != null)
 		{
-			previousControl.FocusNeighborBottom = newControls[0].GetPath();
+			previousControl.FocusNeighborBottom = controls[0].GetPath();
 		}
 
-		for (int i = 0; i < newControls.Count; i++)
+		for (int i = 0; i < controls.Count; i++)
 		{
-			Control current = newControls[i];
-			Control top = i == 0 ? previousControl ?? current : newControls[i - 1];
-			Control bottom = i == newControls.Count - 1 ? current : newControls[i + 1];
+			Control current = controls[i];
+			Control top = i == 0 ? previousControl ?? current : controls[i - 1];
+			Control bottom = i == controls.Count - 1 ? current : controls[i + 1];
 			current.FocusNeighborTop = top.GetPath();
 			current.FocusNeighborBottom = bottom.GetPath();
 			current.FocusNeighborLeft = current.GetPath();
@@ -445,13 +652,22 @@ public static class PaletteSettingsMod
 	private static void TryBindExistingControls(VBoxContainer content)
 	{
 		_presetDropdown = content.FindChild(PresetDropdownName, recursive: true, owned: false) as OptionButton;
+		_dynamicRgbToggle = content.FindChild(DynamicRgbToggleName, recursive: true, owned: false) as NFastModeTickbox;
+		_dynamicRgbSpeedDropdown = content.FindChild(DynamicRgbSpeedDropdownName, recursive: true, owned: false) as OptionButton;
+		_dragRotateToggle = content.FindChild(DragRotateToggleName, recursive: true, owned: false) as NFastModeTickbox;
 
 		_colorButtons.Clear();
+		_colorRgbToggles.Clear();
 		foreach (PaletteColorSlot slot in Enum.GetValues(typeof(PaletteColorSlot)).Cast<PaletteColorSlot>())
 		{
 			if (content.FindChild(GetColorButtonName(slot), recursive: true, owned: false) is ColorPickerButton button)
 			{
 				_colorButtons[slot] = button;
+			}
+
+			if (content.FindChild(GetColorRgbToggleName(slot), recursive: true, owned: false) is NFastModeTickbox rgbToggle)
+			{
+				_colorRgbToggles[slot] = rgbToggle;
 			}
 		}
 	}
@@ -473,6 +689,17 @@ public static class PaletteSettingsMod
 		}
 
 		defaults.PresetId = ParsePresetId(ReadPresetValue(config, LoadPresetFallback(defaults.PresetId)));
+		defaults.DynamicRgbEnabled = ReadBool(config, "dynamic_rgb_enabled", defaults.DynamicRgbEnabled);
+		defaults.DynamicRgbSpeed = ReadFloat(config, "dynamic_rgb_speed", defaults.DynamicRgbSpeed);
+		defaults.RotateTowardsMouseWhileDragging = ReadBool(config, "drag_rotate_enabled", defaults.RotateTowardsMouseWhileDragging);
+		defaults.RgbMask.SwordBody1 = ReadBool(config, "rgb_sword_body_1", defaults.RgbMask.SwordBody1);
+		defaults.RgbMask.SwordBody2 = ReadBool(config, "rgb_sword_body_2", defaults.RgbMask.SwordBody2);
+		defaults.RgbMask.Blade1 = ReadBool(config, "rgb_blade_1", defaults.RgbMask.Blade1);
+		defaults.RgbMask.Blade2 = ReadBool(config, "rgb_blade_2", defaults.RgbMask.Blade2);
+		defaults.RgbMask.Flame1 = ReadBool(config, "rgb_flame_1", defaults.RgbMask.Flame1);
+		defaults.RgbMask.Flame2 = ReadBool(config, "rgb_flame_2", defaults.RgbMask.Flame2);
+		defaults.RgbMask.AuraEffect1 = ReadBool(config, "rgb_aura_1", defaults.RgbMask.AuraEffect1);
+		defaults.RgbMask.AuraEffect2 = ReadBool(config, "rgb_aura_2", defaults.RgbMask.AuraEffect2);
 		defaults.CustomColors.SwordBodyColor1 = ReadColor(config, "sword_body_1", ReadColor(config, "sword_body", defaults.CustomColors.SwordBodyColor1));
 		defaults.CustomColors.SwordBodyColor2 = ReadColor(config, "sword_body_2", ReadColor(config, "blade_2", defaults.CustomColors.SwordBodyColor2));
 		defaults.CustomColors.BladeColor1 = ReadColor(config, "blade_1", defaults.CustomColors.BladeColor1);
@@ -491,6 +718,17 @@ public static class PaletteSettingsMod
 			DirAccess.MakeDirRecursiveAbsolute(ProjectSettings.GlobalizePath(ConfigDirectoryPath));
 			ConfigFile config = new ConfigFile();
 			config.SetValue(ConfigSection, "preset", _settings.PresetId);
+			config.SetValue(ConfigSection, "dynamic_rgb_enabled", _settings.DynamicRgbEnabled);
+			config.SetValue(ConfigSection, "dynamic_rgb_speed", _settings.DynamicRgbSpeed);
+			config.SetValue(ConfigSection, "drag_rotate_enabled", _settings.RotateTowardsMouseWhileDragging);
+			config.SetValue(ConfigSection, "rgb_sword_body_1", _settings.RgbMask.SwordBody1);
+			config.SetValue(ConfigSection, "rgb_sword_body_2", _settings.RgbMask.SwordBody2);
+			config.SetValue(ConfigSection, "rgb_blade_1", _settings.RgbMask.Blade1);
+			config.SetValue(ConfigSection, "rgb_blade_2", _settings.RgbMask.Blade2);
+			config.SetValue(ConfigSection, "rgb_flame_1", _settings.RgbMask.Flame1);
+			config.SetValue(ConfigSection, "rgb_flame_2", _settings.RgbMask.Flame2);
+			config.SetValue(ConfigSection, "rgb_aura_1", _settings.RgbMask.AuraEffect1);
+			config.SetValue(ConfigSection, "rgb_aura_2", _settings.RgbMask.AuraEffect2);
 			config.SetValue(ConfigSection, "sword_body", _settings.CustomColors.SwordBodyColor1);
 			config.SetValue(ConfigSection, "sword_body_1", _settings.CustomColors.SwordBodyColor1);
 			config.SetValue(ConfigSection, "sword_body_2", _settings.CustomColors.SwordBodyColor2);
@@ -581,6 +819,26 @@ public static class PaletteSettingsMod
 			}
 
 			_presetDropdown.Select(selectedIndex);
+			if (_dynamicRgbToggle != null)
+			{
+				_dynamicRgbToggle.IsTicked = _settings.DynamicRgbEnabled;
+			}
+
+			if (_dynamicRgbSpeedDropdown != null)
+			{
+				int speedIndex = FindSpeedDropdownItemIndexBySpeed(_dynamicRgbSpeedDropdown, _settings.DynamicRgbSpeed);
+				if (speedIndex < 0)
+				{
+					speedIndex = 0;
+				}
+
+				_dynamicRgbSpeedDropdown.Select(speedIndex);
+			}
+
+			if (_dragRotateToggle != null)
+			{
+				_dragRotateToggle.IsTicked = _settings.RotateTowardsMouseWhileDragging;
+			}
 			bool useCustomColors = IsCustomPreset(_settings.PresetId);
 			PaletteColorSet activeColors = _settings.GetActiveColors();
 			foreach ((PaletteColorSlot slot, ColorPickerButton button) in _colorButtons)
@@ -590,6 +848,11 @@ public static class PaletteSettingsMod
 				button.Text = FormatColor(color);
 				button.Disabled = !useCustomColors;
 				button.Modulate = useCustomColors ? Colors.White : new Color(1f, 1f, 1f, 0.6f);
+			}
+
+			foreach ((PaletteColorSlot slot, NFastModeTickbox toggle) in _colorRgbToggles)
+			{
+				toggle.IsTicked = _settings.RgbMask.Get(slot);
 			}
 		}
 		finally
@@ -637,6 +900,62 @@ public static class PaletteSettingsMod
 		ApplyPaletteToExistingVfx();
 	}
 
+	private static void OnDynamicRgbToggled(bool enabled)
+	{
+		if (_isRefreshingUi)
+		{
+			return;
+		}
+
+		_settings.DynamicRgbEnabled = enabled;
+		SaveSettings();
+		RefreshUiFromSettings();
+		ApplyPaletteToExistingVfx();
+	}
+
+	private static void OnDynamicRgbSpeedChanged(int speedId)
+	{
+		if (_isRefreshingUi)
+		{
+			return;
+		}
+
+		if (!TryGetSpeedFromId(speedId, out float speed))
+		{
+			return;
+		}
+
+		_settings.DynamicRgbSpeed = speed;
+		SaveSettings();
+		RefreshUiFromSettings();
+		ApplyPaletteToExistingVfx();
+	}
+
+	private static void OnDragRotateToggled(bool enabled)
+	{
+		if (_isRefreshingUi)
+		{
+			return;
+		}
+
+		_settings.RotateTowardsMouseWhileDragging = enabled;
+		SaveSettings();
+		RefreshUiFromSettings();
+	}
+
+	private static void OnSlotRgbToggled(PaletteColorSlot slot, bool enabled)
+	{
+		if (_isRefreshingUi)
+		{
+			return;
+		}
+
+		_settings.RgbMask.Set(slot, enabled);
+		SaveSettings();
+		RefreshUiFromSettings();
+		ApplyPaletteToExistingVfx();
+	}
+
 	private static void ApplyPaletteToExistingVfx()
 	{
 		if (Engine.GetMainLoop() is not SceneTree tree)
@@ -667,8 +986,89 @@ public static class PaletteSettingsMod
 
 	private static void ApplyPaletteToVfx(NSovereignBladeVfx vfx)
 	{
-		PaletteColorSet colors = _settings.GetActiveColors();
+		PaletteSettings settings = GetSettingsForVfx(vfx);
+		PaletteColorSet colors = GetRuntimeColors(settings);
 		ApplyBladeAndFlamePalette(vfx, colors);
+	}
+
+	private static PaletteColorSet GetRuntimeColorsForSlashContext()
+	{
+		PaletteSettings settings = ResolveSettingsForSlashContext();
+		return GetRuntimeColors(settings);
+	}
+
+	internal static SovereignBladeTrailPalette GetRuntimeTrailPalette()
+	{
+		PaletteColorSet colors = GetRuntimeColors(_settings);
+		Color primary = colors.BladeColor1;
+		Color secondary = colors.BladeColor2;
+		Color spark = colors.AuraEffect2Color.Lerp(colors.FlameColor2, 0.35f);
+
+		return new SovereignBladeTrailPalette(primary, secondary, spark);
+	}
+
+	internal static bool IsDragRotateEnabled()
+	{
+		return _settings.RotateTowardsMouseWhileDragging;
+	}
+
+	private static PaletteColorSet GetRuntimeColors(PaletteSettings settings)
+	{
+		PaletteColorSet baseColors = settings.GetActiveColors();
+		if (!settings.DynamicRgbEnabled)
+		{
+			return baseColors;
+		}
+
+		float timeSeconds = Time.GetTicksMsec() / 1000f;
+		return CreateDynamicColors(baseColors, timeSeconds, settings);
+	}
+
+	private static PaletteColorSet CreateDynamicColors(PaletteColorSet source, float timeSeconds, PaletteSettings settings)
+	{
+		float phase = (timeSeconds * settings.DynamicRgbSpeed) % 1f;
+		return PaletteColorSet.From(
+			AnimateColorIfEnabled(PaletteColorSlot.SwordBody1, source.SwordBodyColor1, phase + 0.00f, settings),
+			AnimateColorIfEnabled(PaletteColorSlot.SwordBody2, source.SwordBodyColor2, phase + 0.08f, settings),
+			AnimateColorIfEnabled(PaletteColorSlot.Blade1, source.BladeColor1, phase + 0.16f, settings),
+			AnimateColorIfEnabled(PaletteColorSlot.Blade2, source.BladeColor2, phase + 0.24f, settings),
+			AnimateColorIfEnabled(PaletteColorSlot.Flame1, source.FlameColor1, phase + 0.32f, settings),
+			AnimateColorIfEnabled(PaletteColorSlot.Flame2, source.FlameColor2, phase + 0.40f, settings),
+			AnimateColorIfEnabled(PaletteColorSlot.AuraEffect1, source.AuraEffect1Color, phase + 0.48f, settings),
+			AnimateColorIfEnabled(PaletteColorSlot.AuraEffect2, source.AuraEffect2Color, phase + 0.56f, settings));
+	}
+
+	private static Color AnimateColorIfEnabled(PaletteColorSlot slot, Color baseColor, float phase, PaletteSettings settings)
+	{
+		return settings.RgbMask.Get(slot) ? AnimateColor(baseColor, phase) : baseColor;
+	}
+
+	private static PaletteSettings GetSettingsForVfx(NSovereignBladeVfx vfx)
+	{
+		return _settings;
+	}
+
+	private static PaletteSettings ResolveSettingsForSlashContext()
+	{
+		return _settings;
+	}
+
+	private static ulong? GetPlayerNetIdFromVfx(NSovereignBladeVfx? vfx)
+	{
+		return vfx?.Card?.Owner?.NetId;
+	}
+
+
+	private static Color AnimateColor(Color baseColor, float phase)
+	{
+		float hue = Mathf.PosMod(phase, 1f);
+		Color rgbWave = Color.FromHsv(hue, 1f, 1f, 1f);
+		Color mixed = baseColor.Lerp(rgbWave, 0.45f);
+
+		// Keep alpha from the source color while adding a soft saturation/value lift.
+		float boostedS = Mathf.Clamp(mixed.S + DynamicRgbSaturationBoost, 0f, 1f);
+		float boostedV = Mathf.Clamp(mixed.V + DynamicRgbValueBoost, 0f, 1f);
+		return Color.FromHsv(mixed.H, boostedS, boostedV, baseColor.A);
 	}
 
 	private static void ApplyBladeAndFlamePalette(NSovereignBladeVfx vfx, PaletteColorSet colors)
@@ -714,12 +1114,39 @@ public static class PaletteSettingsMod
 
 	private static void SetShaderColor(Node root, string path, string shaderParameterName, Color color)
 	{
-		if (GetCanvasItem(root, path)?.Material is not ShaderMaterial shaderMaterial)
+		CanvasItem? item = GetCanvasItem(root, path);
+		if (item == null)
+		{
+			return;
+		}
+
+		ShaderMaterial? shaderMaterial = GetUniqueShaderMaterial(item);
+		if (shaderMaterial == null)
 		{
 			return;
 		}
 
 		shaderMaterial.SetShaderParameter(shaderParameterName, color);
+	}
+
+	private static ShaderMaterial? GetUniqueShaderMaterial(CanvasItem item)
+	{
+		if (item.Material is not ShaderMaterial shaderMaterial)
+		{
+			return null;
+		}
+
+		const string MaterialUniqueMetaKey = "bsb_palette_unique_material";
+		if (!item.HasMeta(MaterialUniqueMetaKey))
+		{
+			ShaderMaterial duplicated = (ShaderMaterial)shaderMaterial.Duplicate();
+			duplicated.ResourceLocalToScene = true;
+			item.Material = duplicated;
+			item.SetMeta(MaterialUniqueMetaKey, true);
+			return duplicated;
+		}
+
+		return item.Material as ShaderMaterial;
 	}
 
 	private static void RefreshPanelSize(NSettingsPanel panel)
@@ -776,6 +1203,88 @@ public static class PaletteSettingsMod
 	private static string GetColorButtonName(PaletteColorSlot slot)
 	{
 		return ColorButtonPrefix + slot;
+	}
+
+	private static string GetColorRgbToggleName(PaletteColorSlot slot)
+	{
+		return ColorRgbTogglePrefix + slot;
+	}
+
+	private static bool TryHandleModTickboxState(NFastModeTickbox tickbox, bool isTicked)
+	{
+		string tickboxName = tickbox.Name.ToString();
+		if (!tickboxName.StartsWith("ModScenePalette", StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		if (tickboxName == DynamicRgbToggleName)
+		{
+			OnDynamicRgbToggled(isTicked);
+			return true;
+		}
+
+		if (tickboxName == DragRotateToggleName)
+		{
+			OnDragRotateToggled(isTicked);
+			return true;
+		}
+
+		if (tickboxName.StartsWith(ColorRgbTogglePrefix, StringComparison.Ordinal))
+		{
+			string slotText = tickboxName.Substring(ColorRgbTogglePrefix.Length);
+			if (Enum.TryParse(slotText, out PaletteColorSlot slot))
+			{
+				OnSlotRgbToggled(slot, isTicked);
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static bool TryGetSpeedFromId(int speedId, out float speed)
+	{
+		foreach ((int id, _, float itemSpeed) in _dynamicSpeedOptions)
+		{
+			if (id == speedId)
+			{
+				speed = itemSpeed;
+				return true;
+			}
+		}
+
+		speed = DefaultDynamicRgbSpeedCyclesPerSecond;
+		return false;
+	}
+
+	private static int FindSpeedDropdownItemIndexBySpeed(OptionButton dropdown, float speed)
+	{
+		speed = ClampDynamicRgbSpeed(speed);
+		int bestIndex = -1;
+		float bestDistance = float.MaxValue;
+
+		for (int i = 0; i < dropdown.ItemCount; i++)
+		{
+			if (!TryGetSpeedFromId(dropdown.GetItemId(i), out float itemSpeed))
+			{
+				continue;
+			}
+
+			float distance = Math.Abs(itemSpeed - speed);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				bestIndex = i;
+			}
+		}
+
+		return bestIndex;
+	}
+
+	private static float ClampDynamicRgbSpeed(float speed)
+	{
+		return Mathf.Clamp(speed, 0.01f, 1.00f);
 	}
 
 	private static string GetSlotLabel(PaletteColorSlot slot)
@@ -915,6 +1424,52 @@ public static class PaletteSettingsMod
 		}
 	}
 
+	private static bool ReadBool(ConfigFile config, string key, bool fallback)
+	{
+		try
+		{
+			Variant value = config.GetValue(ConfigSection, key, fallback);
+			return value.VariantType switch
+			{
+				Variant.Type.Bool => (bool)value,
+				Variant.Type.Int => (int)value != 0,
+				Variant.Type.Float => Math.Abs((double)(float)value) > 0.001,
+				_ => bool.TryParse(value.ToString(), out bool parsed) ? parsed : fallback
+			};
+		}
+		catch
+		{
+			return fallback;
+		}
+	}
+
+	private static float ReadFloat(ConfigFile config, string key, float fallback)
+	{
+		try
+		{
+			Variant value = config.GetValue(ConfigSection, key, fallback);
+			if (value.VariantType == Variant.Type.Float)
+			{
+				return ClampDynamicRgbSpeed((float)value);
+			}
+
+			if (value.VariantType == Variant.Type.Int)
+			{
+				return ClampDynamicRgbSpeed((int)value);
+			}
+
+			if (float.TryParse(value.ToString(), out float parsed))
+			{
+				return ClampDynamicRgbSpeed(parsed);
+			}
+		}
+		catch
+		{
+		}
+
+		return ClampDynamicRgbSpeed(fallback);
+	}
+
 	private static void PrintWarning(string message)
 	{
 		if (!TryPrintToModConsole(message))
@@ -1018,19 +1573,127 @@ public static class PaletteSettingsMod
 	{
 		public int PresetId { get; set; }
 
+		public bool DynamicRgbEnabled { get; set; }
+
+		public float DynamicRgbSpeed { get; set; }
+
+		public bool RotateTowardsMouseWhileDragging { get; set; }
+
 		public PaletteColorSet CustomColors { get; } = PaletteColorSet.CreateDefaultCustom();
+
+		public PaletteRgbMask RgbMask { get; } = PaletteRgbMask.CreateAllEnabled();
 
 		public static PaletteSettings CreateDefaults()
 		{
 			return new PaletteSettings
 			{
-				PresetId = PresetDefaultId
+				PresetId = PresetDefaultId,
+				DynamicRgbEnabled = false,
+				DynamicRgbSpeed = DefaultDynamicRgbSpeedCyclesPerSecond,
+				RotateTowardsMouseWhileDragging = true
 			};
 		}
 
 		public PaletteColorSet GetActiveColors()
 		{
 			return ResolveActiveColors(PresetId, CustomColors);
+		}
+
+		public PaletteSettings Clone()
+		{
+			PaletteSettings cloned = CreateDefaults();
+			cloned.PresetId = PresetId;
+			cloned.DynamicRgbEnabled = DynamicRgbEnabled;
+			cloned.DynamicRgbSpeed = DynamicRgbSpeed;
+			cloned.RotateTowardsMouseWhileDragging = RotateTowardsMouseWhileDragging;
+			foreach (PaletteColorSlot slot in Enum.GetValues(typeof(PaletteColorSlot)).Cast<PaletteColorSlot>())
+			{
+				cloned.CustomColors.Set(slot, CustomColors.Get(slot));
+				cloned.RgbMask.Set(slot, RgbMask.Get(slot));
+			}
+
+			return cloned;
+		}
+	}
+
+	private sealed class PaletteRgbMask
+	{
+		public bool SwordBody1 { get; set; }
+
+		public bool SwordBody2 { get; set; }
+
+		public bool Blade1 { get; set; }
+
+		public bool Blade2 { get; set; }
+
+		public bool Flame1 { get; set; }
+
+		public bool Flame2 { get; set; }
+
+		public bool AuraEffect1 { get; set; }
+
+		public bool AuraEffect2 { get; set; }
+
+		public bool Get(PaletteColorSlot slot)
+		{
+			return slot switch
+			{
+				PaletteColorSlot.SwordBody1 => SwordBody1,
+				PaletteColorSlot.SwordBody2 => SwordBody2,
+				PaletteColorSlot.Blade1 => Blade1,
+				PaletteColorSlot.Blade2 => Blade2,
+				PaletteColorSlot.Flame1 => Flame1,
+				PaletteColorSlot.Flame2 => Flame2,
+				PaletteColorSlot.AuraEffect1 => AuraEffect1,
+				PaletteColorSlot.AuraEffect2 => AuraEffect2,
+				_ => true
+			};
+		}
+
+		public void Set(PaletteColorSlot slot, bool enabled)
+		{
+			switch (slot)
+			{
+				case PaletteColorSlot.SwordBody1:
+					SwordBody1 = enabled;
+					break;
+				case PaletteColorSlot.SwordBody2:
+					SwordBody2 = enabled;
+					break;
+				case PaletteColorSlot.Blade1:
+					Blade1 = enabled;
+					break;
+				case PaletteColorSlot.Blade2:
+					Blade2 = enabled;
+					break;
+				case PaletteColorSlot.Flame1:
+					Flame1 = enabled;
+					break;
+				case PaletteColorSlot.Flame2:
+					Flame2 = enabled;
+					break;
+				case PaletteColorSlot.AuraEffect1:
+					AuraEffect1 = enabled;
+					break;
+				case PaletteColorSlot.AuraEffect2:
+					AuraEffect2 = enabled;
+					break;
+			}
+		}
+
+		public static PaletteRgbMask CreateAllEnabled()
+		{
+			return new PaletteRgbMask
+			{
+				SwordBody1 = true,
+				SwordBody2 = true,
+				Blade1 = true,
+				Blade2 = true,
+				Flame1 = true,
+				Flame2 = true,
+				AuraEffect1 = true,
+				AuraEffect2 = true
+			};
 		}
 	}
 

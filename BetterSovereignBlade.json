@@ -1,0 +1,11 @@
+﻿{
+  "id": "BetterSovereignBlade",
+  "name": "BetterSovereignBlade",
+  "author": "SparkUiX&&Tongs",
+  "description": "Interactive dragging, targeting feedback, trails, and color customization for the Regent's Sovereign Blade.",
+  "version": "0.1.0",
+  "has_pck": false,
+  "has_dll": true,
+  "dependencies": [],
+  "affects_gameplay": false
+}
