@@ -71,10 +71,6 @@ internal class SovereignBladeGlowColorPatch_Ready
 
     private static void Postfix(NSovereignBladeVfx __instance)
     {
-        Node2D _blade = __instance.GetNode<Node2D>("SpineSword/SwordBone/ScaleContainer/Blade");
-        Node2D _stepped = __instance.GetNode<Node2D>("SpineSword/SwordBone/ScaleContainer/SteppedFireMix");
-        Node2D _blade2 = __instance.GetNode<Node2D>("SpineSword/SwordBone/ScaleContainer/Blade2");
-        TextureRect _bladeOutline2 = __instance.GetNode<TextureRect>("SpineSword/SwordBone/ScaleContainer/BladeOutline2");
         SovereignBladeGlowColorState.TryApply(__instance);
     }
 }

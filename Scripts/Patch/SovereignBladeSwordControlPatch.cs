@@ -43,7 +43,21 @@ internal static class SovereignBladeSwordControlState
     internal static float HoveredHoldSeconds = 0.08f;
     internal static float HoveredTimeout;
     internal static NCreature? HoveredCreature;
-    internal static bool UseMouseAiming = false;   // 默认使用新逻辑
+    internal static bool UseMouseAiming = false;   // 默认指向悬停的生物
+
+    internal static void ResetPendingReleaseAndHover()
+    {
+        ReleasePending = false;
+        ReleaseCooldown = 0f;
+        HoveredCreature = null;
+        HoveredTimeout = 0f;
+    }
+
+    internal static void BeginReleaseDelay()
+    {
+        ReleasePending = true;
+        ReleaseCooldown = HoldReleaseDelaySeconds;
+    }
 
     internal static void Reset()
     {
@@ -67,19 +81,19 @@ internal static class SovereignBladeSwordControl
         if (playerNode == null)
             return false;
 
-        NSovereignBladeVfx? sword = playerNode.GetChildren()
+        NSovereignBladeVfx? swordVfx = playerNode.GetChildren()
             .OfType<NSovereignBladeVfx>()
             .FirstOrDefault();
-        if (sword == null)
+        if (swordVfx == null)
             return false;
 
-        Node2D? spine = AccessTools.Field(typeof(NSovereignBladeVfx), "_spineNode")
-            .GetValue(sword) as Node2D;
-        if (spine == null)
+        Node2D? spineNode = AccessTools.Field(typeof(NSovereignBladeVfx), "_spineNode")
+            .GetValue(swordVfx) as Node2D;
+        if (spineNode == null)
             return false;
 
-        SovereignBladeSwordControlState.ActiveSword = sword;
-        SovereignBladeSwordControlState.SpineNode = spine;
+        SovereignBladeSwordControlState.ActiveSword = swordVfx;
+        SovereignBladeSwordControlState.SpineNode = spineNode;
         SovereignBladeSwordControlState.IsActive = true;
         return true;
     }
@@ -100,10 +114,10 @@ internal static class SovereignBladeSwordControl
         if (SovereignBladeSwordControlState.SpineNode == null)
             return;
 
-        Vector2 dir = (creature.VfxSpawnPosition - SovereignBladeSwordControlState.SpineNode.GlobalPosition);
-        if (dir.LengthSquared() > 0.0001f)
+        Vector2 aimDirection = (creature.VfxSpawnPosition - SovereignBladeSwordControlState.SpineNode.GlobalPosition);
+        if (aimDirection.LengthSquared() > 0.0001f)
         {
-            SovereignBladeSwordControlState.DesiredRotation = dir.Angle() + SovereignBladeSwordControlState.RotationOffsetRad;
+            SovereignBladeSwordControlState.DesiredRotation = aimDirection.Angle() + SovereignBladeSwordControlState.RotationOffsetRad;
         }
     }
 
@@ -124,11 +138,11 @@ internal static class SovereignBladeSwordControl
 
     internal static void UpdateAimRotation(NCreature creature, Vector2 fromPosition)
     {
-        Vector2 dir = creature.VfxSpawnPosition - fromPosition;
-        if (dir.LengthSquared() <= 0.0001f)
+        Vector2 aimDirection = creature.VfxSpawnPosition - fromPosition;
+        if (aimDirection.LengthSquared() <= 0.0001f)
             return;
 
-        SovereignBladeSwordControlState.DesiredRotation = dir.Angle() + SovereignBladeSwordControlState.RotationOffsetRad;
+        SovereignBladeSwordControlState.DesiredRotation = aimDirection.Angle() + SovereignBladeSwordControlState.RotationOffsetRad;
     }
 }
 
@@ -165,33 +179,11 @@ internal class SovereignBladeSwordControl_StartTargeting_Position
         if (!SovereignBladeSwordControl.TrySetActiveSword())
             return;
 
-        SovereignBladeSwordControlState.ReleasePending = false;
-        SovereignBladeSwordControlState.ReleaseCooldown = 0f;
-        SovereignBladeSwordControlState.HoveredCreature = null;
-        SovereignBladeSwordControlState.HoveredTimeout = 0f;
+        SovereignBladeSwordControlState.ResetPendingReleaseAndHover();
         SovereignBladeSwordControl.SetDesiredToScreenAnchor();
         ModConsole.Print("[SB] Sword control: targeting start (position)");
     }
 }
-
-// [HarmonyPatch(typeof(NSovereignBladeVfx), "EndSlash")]
-// class SovereignBladeSlashFixPatch
-// {
-//     static void Postfix(NSovereignBladeVfx __instance)
-//     {
-//         var spineField = AccessTools.Field(typeof(NSovereignBladeVfx), "_spineNode");
-//         var trailStartField = AccessTools.Field(typeof(NSovereignBladeVfx), "_trailStart");
-//         var slashField = AccessTools.Field(typeof(NSovereignBladeVfx), "_slashParticles");
-//
-//         var spine = (Node2D)spineField.GetValue(__instance);
-//         var trailStart = (Vector2)trailStartField.GetValue(__instance);
-//         var slash = (GpuParticles2D)slashField.GetValue(__instance);
-//
-//         Vector2 dir = spine.GlobalPosition - trailStart;
-//
-//         slash.Rotation = dir.Angle() - Mathf.Pi / 2;
-//     }
-// }
 
 [HarmonyPatch(typeof(NTargetManager), "StartTargeting", new Type[] { typeof(TargetType), typeof(Control), typeof(TargetMode), typeof(Func<bool>), typeof(Func<Node, bool>) })]
 internal class SovereignBladeSwordControl_StartTargeting_Control
@@ -204,10 +196,7 @@ internal class SovereignBladeSwordControl_StartTargeting_Control
         if (!SovereignBladeSwordControl.TrySetActiveSword())
             return;
 
-        SovereignBladeSwordControlState.ReleasePending = false;
-        SovereignBladeSwordControlState.ReleaseCooldown = 0f;
-        SovereignBladeSwordControlState.HoveredCreature = null;
-        SovereignBladeSwordControlState.HoveredTimeout = 0f;
+        SovereignBladeSwordControlState.ResetPendingReleaseAndHover();
         SovereignBladeSwordControl.SetDesiredToScreenAnchor();
         ModConsole.Print("[SB] Sword control: targeting start (control)");
     }
@@ -236,8 +225,7 @@ internal class SovereignBladeSwordControl_FinishTargeting
         if (!SovereignBladeSwordControlState.IsActive)
             return;
 
-        SovereignBladeSwordControlState.ReleasePending = true;
-        SovereignBladeSwordControlState.ReleaseCooldown = SovereignBladeSwordControlState.HoldReleaseDelaySeconds;
+        SovereignBladeSwordControlState.BeginReleaseDelay();
         SovereignBladeSwordControlState.HoveredCreature = null;
         SovereignBladeSwordControlState.HoveredTimeout = 0f;
         ModConsole.Print("[SB] Sword control: targeting end (delay)");
@@ -255,18 +243,18 @@ internal class SovereignBladeSwordControl_Process
         if (!ReferenceEquals(SovereignBladeSwordControlState.ActiveSword, __instance))
             return true;
 
-        Node2D? spine = SovereignBladeSwordControlState.SpineNode;
-        if (spine == null)
+        Node2D? spineNode = SovereignBladeSwordControlState.SpineNode;
+        if (spineNode == null)
             return true;
 
-        float dt = (float)delta;
+        float deltaSeconds = (float)delta;
 
         if (!SovereignBladeTargetingDebugState.TargetingActive && SovereignBladeSwordControlState.ReleasePending)
         {
-            SovereignBladeSwordControlState.ReleaseCooldown -= dt;
+            SovereignBladeSwordControlState.ReleaseCooldown -= deltaSeconds;
             if (SovereignBladeSwordControlState.ReleaseCooldown <= 0f)
             {
-                spine.GlobalRotation = SovereignBladeSwordControlState.RotationOffsetRad;
+                spineNode.GlobalRotation = SovereignBladeSwordControlState.RotationOffsetRad;
                 SovereignBladeSwordControlState.Reset();
                 ModConsole.Print("[SB] Sword control: hold canceled (delayed)");
                 return true;
@@ -277,61 +265,50 @@ internal class SovereignBladeSwordControl_Process
             ? SovereignBladeSwordControlState.MoveSpeed
             : SovereignBladeSwordControlState.HoldMoveSpeed;
 
-        Vector2 currentPos = spine.GlobalPosition;
-        Vector2 desiredPos = SovereignBladeSwordControlState.DesiredPosition;
-        spine.GlobalPosition = currentPos.MoveToward(desiredPos, moveSpeed * dt);
-
-        // if (SovereignBladeTargetingDebugState.TargetingActive && SovereignBladeSwordControlState.HoveredCreature != null)
-        // {
-        //     SovereignBladeSwordControlState.HoveredTimeout -= dt;
-        //     if (SovereignBladeSwordControlState.HoveredTimeout <= 0f)
-        //     {
-        //         SovereignBladeSwordControlState.HoveredCreature = null;
-        //         SovereignBladeSwordControlState.DesiredRotation = SovereignBladeSwordControlState.DownAngleRad + SovereignBladeSwordControlState.RotationOffsetRad;
-        //     }
-        // }
+        Vector2 currentPosition = spineNode.GlobalPosition;
+        Vector2 desiredPosition = SovereignBladeSwordControlState.DesiredPosition;
+        spineNode.GlobalPosition = currentPosition.MoveToward(desiredPosition, moveSpeed * deltaSeconds);
 
         if (SovereignBladeTargetingDebugState.TargetingActive)
         {
             if (SovereignBladeSwordControlState.UseMouseAiming)
             {
-                // 新逻辑：指向鼠标
-                Vector2 mousePos = spine.GetGlobalMousePosition();
-                Vector2 dir = mousePos - spine.GlobalPosition;
-                if (dir.LengthSquared() > 0.0001f)
+                // 鼠标瞄准：指向当前鼠标位置
+                Vector2 mousePosition = spineNode.GetGlobalMousePosition();
+                Vector2 aimDirection = mousePosition - spineNode.GlobalPosition;
+                if (aimDirection.LengthSquared() > 0.0001f)
                 {
-                    SovereignBladeSwordControlState.DesiredRotation = dir.Angle() + SovereignBladeSwordControlState.RotationOffsetRad;
+                    SovereignBladeSwordControlState.DesiredRotation = aimDirection.Angle() + SovereignBladeSwordControlState.RotationOffsetRad;
                 }
             }
             else
             {
-                // 旧逻辑：指向悬停的生物
+                // 生物瞄准：指向悬停的生物，没有目标时恢复默认方向
                 if (SovereignBladeSwordControlState.HoveredCreature != null)
                 {
-                    SovereignBladeSwordControl.UpdateAimRotation(SovereignBladeSwordControlState.HoveredCreature, spine.GlobalPosition);
+                    SovereignBladeSwordControl.UpdateAimRotation(SovereignBladeSwordControlState.HoveredCreature, spineNode.GlobalPosition);
                 }
                 else
                 {
                     SovereignBladeSwordControlState.DesiredRotation = SovereignBladeSwordControlState.DownAngleRad + SovereignBladeSwordControlState.RotationOffsetRad;
                 }
-                // 没有悬停生物时，DesiredRotation 保持原值（或可设置为默认方向）
             }
         }
 
-        float currentRot = spine.GlobalRotation;
-        float desiredRot = SovereignBladeSwordControlState.DesiredRotation;
-        float rotSpeed = SovereignBladeTargetingDebugState.TargetingActive
+        float currentRotation = spineNode.GlobalRotation;
+        float desiredRotation = SovereignBladeSwordControlState.DesiredRotation;
+        float rotationSpeed = SovereignBladeTargetingDebugState.TargetingActive
             ? SovereignBladeSwordControlState.RotationSpeedRad
             : SovereignBladeSwordControlState.HoldRotationSpeedRad;
-        float maxStep = rotSpeed * dt;
-        spine.GlobalRotation = SovereignBladeMath.MoveTowardAngle(currentRot, desiredRot, maxStep);
+        float maximumRotationStep = rotationSpeed * deltaSeconds;
+        spineNode.GlobalRotation = SovereignBladeMath.MoveTowardAngle(currentRotation, desiredRotation, maximumRotationStep);
 
         if (!SovereignBladeTargetingDebugState.TargetingActive)
         {
-            SovereignBladeSwordControlState.LogCooldown -= dt;
+            SovereignBladeSwordControlState.LogCooldown -= deltaSeconds;
             if (SovereignBladeSwordControlState.LogCooldown <= 0f)
             {
-                ModConsole.Print($"[SB] Sword pos (hold, no target): {spine.GlobalPosition}");
+                ModConsole.Print($"[SB] Sword pos (hold, no target): {spineNode.GlobalPosition}");
                 SovereignBladeSwordControlState.LogCooldown = SovereignBladeSwordControlState.LogIntervalSeconds;
             }
         }
@@ -357,10 +334,7 @@ internal class SovereignBladeSwordControl_MouseCardPlay_Start
         if (!SovereignBladeSwordControl.TrySetActiveSword())
             return;
 
-        SovereignBladeSwordControlState.ReleasePending = false;
-        SovereignBladeSwordControlState.ReleaseCooldown = 0f;
-        SovereignBladeSwordControlState.HoveredCreature = null;
-        SovereignBladeSwordControlState.HoveredTimeout = 0f;
+        SovereignBladeSwordControlState.ResetPendingReleaseAndHover();
         if (SovereignBladeSwordControl.SetDesiredToScreenAnchor())
         {
             ModConsole.Print("[SB] Sword control: hold anchor set (mouse)");
@@ -384,10 +358,7 @@ internal class SovereignBladeSwordControl_ControllerCardPlay_Start
         if (!SovereignBladeSwordControl.TrySetActiveSword())
             return;
 
-        SovereignBladeSwordControlState.ReleasePending = false;
-        SovereignBladeSwordControlState.ReleaseCooldown = 0f;
-        SovereignBladeSwordControlState.HoveredCreature = null;
-        SovereignBladeSwordControlState.HoveredTimeout = 0f;
+        SovereignBladeSwordControlState.ResetPendingReleaseAndHover();
         if (SovereignBladeSwordControl.SetDesiredToScreenAnchor())
         {
             ModConsole.Print("[SB] Sword control: hold anchor set (controller)");
@@ -406,13 +377,12 @@ internal class SovereignBladeSwordControl_OnMouseReleased
         if (SovereignBladeTargetingDebugState.TargetingActive)
             return;
 
-        if (inputEvent is not InputEventMouseButton mouse || mouse.ButtonIndex != MouseButton.Left)
+        if (inputEvent is not InputEventMouseButton mouseButtonEvent || mouseButtonEvent.ButtonIndex != MouseButton.Left)
             return;
 
         if (SovereignBladeSwordControlState.IsActive)
         {
-            SovereignBladeSwordControlState.ReleasePending = true;
-            SovereignBladeSwordControlState.ReleaseCooldown = SovereignBladeSwordControlState.HoldReleaseDelaySeconds;
+            SovereignBladeSwordControlState.BeginReleaseDelay();
             ModConsole.Print("[SB] Sword control: hold canceled (delay)");
         }
     }
@@ -440,8 +410,8 @@ internal class SovereignBladeSwordControl_OnMouseReleased
                 return;
             }
 
-            Vector2 swordPos = swordTip.GlobalPosition;
-            Vector2 direction = targetPos - swordPos;
+            Vector2 swordTipPosition = swordTip.GlobalPosition;
+            Vector2 direction = targetPos - swordTipPosition;
             if (direction.LengthSquared() < 0.001f)
             {
                 return;
